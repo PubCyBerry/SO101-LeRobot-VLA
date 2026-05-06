@@ -1,8 +1,8 @@
 services:
   leisaac-debug:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     image: leisaac-server:latest
     container_name: leisaac-server
     runtime: nvidia
@@ -21,7 +21,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
     volumes:
-      - .:/workspace/repo
+      - ..:/workspace/repo
       # - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro # Windows의 경우 비활성화
     ulimits:
       memlock: -1
@@ -46,8 +46,8 @@ services:
 
   gr00t-train:
     build:
-      context: .
-      dockerfile: Dockerfile.gr00t
+      context: ..
+      dockerfile: docker/Dockerfile.gr00t
     image: leisaac-gr00t:latest
     container_name: leisaac-gr00t
     runtime: nvidia
@@ -69,7 +69,7 @@ services:
       # python이 import gr00t 를 찾을 수 있도록 소스 경로를 직접 지정.
       PYTHONPATH: /workspace/repo/Isaac-GR00T
     volumes:
-      - .:/workspace/repo
+      - ..:/workspace/repo
     ulimits:
       memlock: -1
       stack: 67108864
@@ -78,8 +78,8 @@ services:
 
   smolvla-server:
     build:
-      context: .
-      dockerfile: Dockerfile.smolvla
+      context: ..
+      dockerfile: docker/Dockerfile.smolvla
     image: leisaac-smolvla:latest
     container_name: leisaac-smolvla
     runtime: nvidia
@@ -95,7 +95,7 @@ services:
       HF_HUB_ENABLE_HF_TRANSFER: "0"
       WANDB_API_KEY: ${WANDB_API_KEY:-}
     volumes:
-      - .:/workspace/repo
+      - ..:/workspace/repo
     ulimits:
       memlock: -1
       stack: 67108864
