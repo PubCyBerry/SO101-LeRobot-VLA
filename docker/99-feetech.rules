@@ -17,6 +17,9 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", \
     MODE="0666", GROUP="dialout", SYMLINK+="feetech%n"
 
+# UVC 카메라 (캡처·메타데이터 노드)
+SUBSYSTEM=="video4linux", KERNEL=="video[0-9]*", MODE="0666", GROUP="video"
+
 # 범용 USB-Serial fallback (모든 ttyUSB/ttyACM)
 KERNEL=="ttyUSB[0-9]*", MODE="0666", GROUP="dialout"
 KERNEL=="ttyACM[0-9]*", MODE="0666", GROUP="dialout"

@@ -79,6 +79,8 @@ isaac = [
     "isaacsim[all,extscache]==5.1.0",
     # LightwheelAI leisaac: IsaacLab + LeRobot + GR00T 통합 래퍼
     "leisaac[isaaclab,gr00t]",
+    # LeRobot
+    "lerobot[feetech]>=0.4.2",
 ]
 
 # ── dev: 개발 도구 ───────────────────────────────────────────────────────────

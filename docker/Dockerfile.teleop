@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libavcodec-dev \
         libavformat-dev \
         libswscale-dev \
+        v4l-utils \
         # USB / serial (Feetech & Dynamixel)
         libevdev-dev \
         libusb-1.0-0 \
@@ -99,19 +100,18 @@ RUN uv pip install --no-cache \
 
 # ── Stage 5: teleop 그룹 전체 설치 ───────────────────────────────────────────
 # pyproject.toml [dependency-groups.teleop] = torch + torchvision + lerobot[feetech]
-# --active : 현재 활성화된 환경을 사용 
+# --active : 현재 활성화된 환경을 사용
 # --frozen : lockfile 이 없거나 pyproject.toml 과 불일치하면 즉시 빌드 실패
 # --only-group teleop : isaac / dev 그룹 완전 배제
 # --no-install-project: 프로젝트 자체(robotics-manipulation 패키지)는 설치 안 함
 FROM torch-layer AS teleop-deps
 
-# uv.lock 이 있으면 복사 (결정론적 설치).
-# 없어도 빌드는 진행되나, 재현성을 위해 로컬에서 `uv lock` 후 커밋 권장.
-COPY pyproject.toml uv.lock ./
+# uv.lock 없이 pyproject.toml constraints 만으로 설치 (로컬 lock 환경에 종속되지 않음).
+# 재현성이 필요하면 --frozen + COPY uv.lock 패턴으로 전환 가능.
+COPY pyproject.toml ./
 
 RUN uv sync \
         --active \
-        --frozen \
         --only-group teleop \
         --no-install-project \
         --no-cache

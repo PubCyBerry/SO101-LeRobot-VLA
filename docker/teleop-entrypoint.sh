@@ -23,7 +23,7 @@
 # ■ 환경 변수 요약 (docker-compose.yaml ↔ .env 에서 주입)
 #   하드웨어 : LEADER_PORT  LEADER_ID  FOLLOWER_PORT  FOLLOWER_ID
 #             BELLY_CAM_DEV  WRIST_CAM_DEV  BELLY_CAM_INDEX  WRIST_CAM_INDEX
-#             CAM_WIDTH  CAM_HEIGHT  CAM_FPS
+#             CAM_WIDTH  CAM_HEIGHT  CAM_FPS  CAM_WARMUP_S  CAM_FOURCC
 #   record  : HF_DATASET_REPO_ID  SINGLE_TASK  NUM_EPISODES
 #             EPISODE_TIME_S  RESET_TIME_S  RECORD_FPS  PUSH_TO_HUB
 #             RECORD_EXTRA_ARGS
@@ -45,6 +45,9 @@ WRIST_CAM_INDEX="${WRIST_CAM_INDEX:-2}"
 CAM_WIDTH="${CAM_WIDTH:-640}"
 CAM_HEIGHT="${CAM_HEIGHT:-480}"
 CAM_FPS="${CAM_FPS:-25}"
+CAM_WARMUP_S="${CAM_WARMUP_S:-5}"
+CAM_FOURCC="${CAM_FOURCC:-MJPG}"
+
 
 # ── record 환경 변수 ────────────────────────────────────────────────────────
 # HF_DATASET_REPO_ID: '{hf_username}/{dataset_name}' 형식 (필수 — 비어 있으면 오류)
@@ -172,7 +175,7 @@ check_lerobot() {
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 echo "========================================================"
-echo "  LeRobot 0.4.2 SO-101 Container"
+echo "  LeRobot 0.5.1 SO-101 Container"
 echo "========================================================"
 
 check_gpu
@@ -223,8 +226,8 @@ case "$CMD" in
       --robot.type=so101_follower \
       --robot.port=${FOLLOWER_PORT} \
       --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}},
+          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          belly: {type: opencv, index_or_path: ${BELLY_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
       --robot.id=${FOLLOWER_ID} \
       --teleop.type=so101_leader \
@@ -296,8 +299,7 @@ case "$CMD" in
       --robot.port=${FOLLOWER_PORT} \
       --robot.id=${FOLLOWER_ID} \
       --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}},
+          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}},
           }" \
       --teleop.type=${TELEOP_TYPE} \
       --teleop.port=${LEADER_PORT} \
