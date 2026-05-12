@@ -39,6 +39,13 @@ dependencies = [
     "hf-xet>=1.4.3",
     # ZMQ 소켓 (IsaacLab ↔ LeRobot 프로세스 간 통신)
     "pyzmq>=27.1.0",
+    # LeRobot >= 0.4.2 + feetech extra
+    #   feetech extra 포함 내용: feetech-servo-sdk, pyserial, opencv-python,
+    #   huggingface-hub, datasets, draccus, gym, safetensors 등
+    "lerobot[feetech]>=0.4.2",
+    # PyTorch — CUDA 12.8 빌드 (pytorch-cu128 index 에서 설치, 아래 sources 참조)
+    "torch>=2.7",
+    "torchvision>=0.22",
 ]
 
 
@@ -52,18 +59,11 @@ dependencies = [
 # Feetech STS3215 서보 통신을 위해 lerobot[feetech] extra 사용.
 # Docker 이미지(Dockerfile.teleop)는 이 그룹만 설치: --only-group teleop
 teleop = [
-    # PyTorch — CUDA 12.8 빌드 (pytorch-cu128 index 에서 설치, 아래 sources 참조)
-    "torch>=2.10; python_version >= '3.12'",
-    "torchvision>=0.22; python_version >= '3.12'",
-    # LeRobot 0.4.2 + feetech extra
-    #   feetech extra 포함 내용: feetech-servo-sdk, pyserial, opencv-python,
-    #   huggingface-hub, datasets, draccus, gym, safetensors 등
-    "lerobot[feetech]==0.5.1; python_version>='3.12'",
-    "pyrealsense2>=2.57.7.10387; python_version >= '3.12'",
     "ffmpeg>=1.4",
     # evdev: Linux 전용 입력 장치 라이브러리 (gamepad / joystick 텔레op 지원)
     # Windows에서는 설치 불가 → sys_platform 마커로 lockfile 생성 실패 방지
     "evdev>=1.7; sys_platform == 'linux'",
+    "packaging>=25.0",
 ]
 
 # ── isaac: Isaac Sim / IsaacLab 시뮬레이션 환경 ─────────────────────────────
@@ -71,16 +71,10 @@ teleop = [
 # leisaac 를 통해 IsaacLab / LeRobot / GR00T 브릿지 제공.
 # 용량이 매우 크므로(~20 GB) 별도 Docker 이미지 또는 로컬 환경에서 사용.
 isaac = [
-    # PyTorch — isaac 환경은 Python 3.11 전용 (Isaac Sim 5.1.0 요구사항)
-    # 마커로 Python 3.12 split에서 teleop의 torch>=2.10과 충돌 방지
-    "torch==2.7.0; python_version < '3.12'",
-    "torchvision==0.22.0; python_version < '3.12'",
     # Isaac Sim 5.1.0 전체 확장 패키지 (nvidia pypi index 에서 설치)
     "isaacsim[all,extscache]==5.1.0",
     # LightwheelAI leisaac: IsaacLab + LeRobot + GR00T 통합 래퍼
     "leisaac[isaaclab,gr00t]",
-    # LeRobot
-    "lerobot[feetech]>=0.4.2",
 ]
 
 # ── dev: 개발 도구 ───────────────────────────────────────────────────────────
@@ -126,14 +120,7 @@ url      = "https://pypi.nvidia.com"
 # ■ uv 전역 설정
 # =============================================================================
 [tool.uv]
-# teleop(Python 3.12)과 isaac(Python 3.11)은 동시 설치 불가 → 독립 resolve 허용
-# torch 버전이 다르므로(teleop >=2.10, isaac ==2.7.0) conflicts 없이는 lockfile 생성 실패
-conflicts = [
-    [
-        { group = "teleop" },
-        { group = "isaac" },
-    ],
-]
+
 # 버전 충돌 방지를 위한 전역 오버라이드
 override-dependencies = [
     # HuggingFace 생태계 호환성 (datasets, transformers 등)

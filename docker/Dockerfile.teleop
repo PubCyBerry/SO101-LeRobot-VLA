@@ -112,7 +112,7 @@ COPY pyproject.toml ./
 
 RUN uv sync \
         --active \
-        --only-group teleop \
+        --group teleop \
         --no-install-project \
         --no-cache
 

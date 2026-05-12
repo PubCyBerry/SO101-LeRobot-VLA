@@ -66,6 +66,7 @@ services:
       - ../data:/workspace/data
       - ../logs:/workspace/logs
       # HuggingFace Hub 캐시 재사용 (이미지 다운로드 반복 방지)
+      # - ~/.cache/huggingface:/root/.cache/huggingface
       - hf_cache:/root/.cache/huggingface
     # ── 환경 변수 ──────────────────────────────────────────────────────────
     environment:
