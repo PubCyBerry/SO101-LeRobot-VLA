@@ -90,7 +90,7 @@ flowchart LR
 | SO-101 Leader Arm | 1 | Feetech STS3215 서보 |
 | SO-101 Follower Arm | 1 | Feetech STS3215 서보 |
 | USB-Serial 어댑터 | 2 | CH343 칩 (COM 포트) |
-| 카메라 | 2 | belly cam (전면), wrist cam (손목) |
+| 카메라 | 3 | belly cam (전면), wrist cam (손목), top cam (탑뷰) |
 
 ### 핵심 의존성
 
@@ -264,6 +264,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml run \
 |-----|------|
 | BELLY_CAM_PORT | 전면부 카메라 포트(예: `/dev/video0`) |
 | WRIST_CAM_PORT | 그리퍼 카메라 포트(예: `/dev/video2`) |
+| TOP_CAM_PORT | 탑뷰 카메라 포트(예: `/dev/video4`) |
 | CAM_WIDTH | 카메라 가로 픽셀 |
 | CAM_HEIGHT | 카메라 세로 픽셀 |
 | CAM_FPS | 카메라 FPS |
@@ -487,7 +488,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm \
 docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot record
 ```
 
-- 카메라 키는 `wrist`, `belly` 로 저장됨 (변경 불필요)
+- 카메라 키는 `wrist`, `belly, top` 으로 저장됨 (변경 불필요)
 - `PUSH_TO_HUB=true` 면 학습 머신에서 HF Hub 으로 바로 받을 수 있음
 - 50+ 에피소드 권장, 다양한 grasp pose / pen 위치로 시연
 
@@ -538,7 +539,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml up -d lerobot-polic
 docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot policy-client
 ```
 
-fine-tuned 체크포인트의 `input_features` 가 `wrist/belly` 이므로 카메라 키 매핑이 자동으로 일치. SO-101 follower 가 학습된 정책으로 의미 있는 액션을 수행한다.
+fine-tuned 체크포인트의 `input_features` 가 `wrist/belly/top` 이므로 카메라 키 매핑이 자동으로 일치. SO-101 follower 가 학습된 정책으로 의미 있는 액션을 수행한다.
 
 ### Async Inference Policy Server (SmolVLA)
 
@@ -605,7 +606,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot \
 - `lerobot/smolvla_base` 는 SO-101 에 미학습 상태라 액션 품질은 무작위에 가깝다. 본 구성의 일차 목적은 **파이프라인 검증**(gRPC 송수신, 카메라/state 매핑, action chunk 적용)이며, 실 사용은 후속 fine-tune 이후로 한다.
 - 첫 호출 시 VLM 백본(`HuggingFaceTB/SmolVLM2-500M-Video-Instruct`) 자동 다운로드로 30–60 초 추가 대기. `prepare-model HuggingFaceTB/SmolVLM2-500M-Video-Instruct` 로 미리 받아두면 즉시 로드. HF 캐시는 명명 볼륨 `lerobot_hf_cache` 에 적재되어 두 서비스가 공유.
 - **보안**: async server 의 pickle deserialization 으로 인한 RCE 위험(CVE-2026-25874). 본 구성은 같은 호스트 loopback 으로 한정. 외부 노출이 필요해지면 SSH 터널 또는 mTLS 래퍼를 추가할 것.
-- **카메라 키 매핑**: 체크포인트의 `input_features` 키와 클라이언트가 보내는 카메라 키가 정확히 일치해야 한다. `lerobot/smolvla_base` 는 `camera1/2/3` 으로 학습됐기 때문에 SO-101 (wrist/belly) 클라이언트로 직결하면 `KeyError: 'observation.images.wrist'` 가 발생한다. 본 레포는 §"Fine-tune 워크플로 (pick_pen)" 의 단계로 SO-101 데이터셋 학습 → 새 체크포인트의 키가 `wrist/belly` 가 되도록 하는 정공법을 권장한다.
+- **카메라 키 매핑**: 체크포인트의 `input_features` 키와 클라이언트가 보내는 카메라 키가 정확히 일치해야 한다. `lerobot/smolvla_base` 는 `camera1/2/3` 으로 학습됐기 때문에 SO-101 (wrist/belly) 클라이언트로 직결하면 `KeyError: 'observation.images.wrist'` 가 발생한다. 본 레포는 §"Fine-tune 워크플로 (pick_pen)" 의 단계로 SO-101 데이터셋 학습 → 새 체크포인트의 키가 `wrist/belly/top` 가 되도록 하는 정공법을 권장한다.
 
 ## Reference
 
