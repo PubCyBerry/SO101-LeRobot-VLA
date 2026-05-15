@@ -79,7 +79,7 @@ services:
       - ../.env
     environment:
       NVIDIA_VISIBLE_DEVICES:     all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     # ── 네트워크 ───────────────────────────────────────────────────────────
     network_mode: host   # 카메라 스트림·ROS 브릿지 등 외부 연결 시 편의
 
@@ -164,7 +164,7 @@ services:
       - ../.env
     environment:
       NVIDIA_VISIBLE_DEVICES:     all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
     # ── 네트워크 ─────────────────────────────────────────────────────────
     # host 모드: 동일 호스트의 robot_client / record 가 127.0.0.1:POLICY_SERVER_PORT
     # 로 직접 접속. 외부 노출이 필요 없으면 호스트 방화벽에서 해당 포트 차단 권장
