@@ -1,5 +1,18 @@
 # Troubleshooting
 
+## 목차 <!-- omit in toc -->
+
+- [WSL2 NTFS 마운트에서 uv sync 실패](#wsl2-ntfs-마운트에서-uv-sync-실패-operation-not-permitted)
+- [uv-compile Too many open files panic (다코어 호스트)](#uv-compile-too-many-open-files-panic-다코어-호스트-모든-uv-run)
+- [nvidia CUDA 휠 다운로드 timeout](#uv-pip-install-torch-단계에서-nvidia-cuda-휠-다운로드-timeout)
+- [카메라 대역폭 제한](#카메라-대역폭-제한)
+- [Docker 컨테이너에서 Vulkan 초기화 실패](#docker-컨테이너에서-vulkan-초기화-실패-linux)
+- [lerobot record 키보드 컨트롤이 동작하지 않음](#lerobot-record-키보드-컨트롤이-동작하지-않음-wslg--windows-terminal)
+- [카메라 sensor가 raytracing pipeline 생성 실패](#카메라-sensor-가-raytracing-pipeline-생성-실패-rt-코어-없는-gpu)
+- [시뮬레이션 기동 시 무시해도 되는 로그](#시뮬레이션-기동-시-무시해도-되는-로그)
+
+---
+
 ## WSL2 NTFS 마운트에서 uv sync 실패 (Operation not permitted)
 
 **현상**: WSL2에서 Windows 드라이브(`/mnt/d/` 등)에 있는 프로젝트 폴더로 `uv sync` 실행 시 패키지 설치 실패
@@ -57,6 +70,8 @@ wsl --shutdown
 ```bash
 python -c "import lerobot, torch; print('lerobot', lerobot.__version__, '/ torch', torch.__version__)"
 ```
+
+---
 
 ## uv-compile Too many open files panic (다코어 호스트, 모든 uv RUN)
 
@@ -141,6 +156,8 @@ docker run --rm nvidia/cuda:12.8.0-runtime-ubuntu24.04 sh -c 'ulimit -Sn; ulimit
 
 soft 1024 가 그대로면 위 패치가 적용되지 않은 상태다. RUN 안에 `ulimit -Sn` 라인이 빠진 곳을 찾아야 한다.
 
+---
+
 ## `uv pip install torch` 단계에서 nvidia CUDA 휠 다운로드 timeout
 
 **현상**: `docker compose build lerobot` 의 Stage 4 (`torch-layer`) 에서 `uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128` 이 100~130초 진행되다 nvidia-* 휠 (cublas / cudnn / cusparse / nvjitlink / cusparselt 등) 중 하나에서 timeout 으로 실패. 매번 실패하는 패키지가 달라진다 (cusparse → cublas → nvjitlink ...). 호스트에서 동일 URL 을 `curl` 로 받으면 1~35초 안에 정상 응답이 온다.
@@ -206,6 +223,8 @@ docker compose --env-file .env -f docker/docker-compose.yaml build lerobot --no-
 ```
 
 캐시 마운트는 BuildKit 빌더가 살아 있는 동안만 유지되므로 빌더를 재생성하면 (`docker buildx rm` / 호스트 재부팅) 다시 받아야 한다. 그래도 한 빌더 안에서는 부분 실패 → 재시도가 즉시 통과한다.
+
+---
 
 ## 카메라 대역폭 제한
 
@@ -297,6 +316,8 @@ Get-WmiObject -Class Win32_USBHub | Select-Object DeviceID, Name
 | `Generic USB Hub` | USB 2.0 |
 | `Generic SuperSpeed USB Hub` | USB 3.0 |
 
+
+---
 
 ## Docker 컨테이너에서 Vulkan 초기화 실패 (Linux)
 
@@ -412,6 +433,8 @@ docker compose run --rm leisaac-debug bash -c '
 
 `network_mode: host` 면 별도 포트 매핑 없이 그대로 노출된다. WebRTC 동적 미디어 협상이 NAT 뒤에서 깨지는 경우가 있어 host network 가 가장 안정적이다.
 
+---
+
 ## `lerobot record` 키보드 컨트롤이 동작하지 않음 (WSLg + Windows Terminal)
 
 **현상**: `docker compose ... run --rm lerobot record` 실행 후 우측/좌측 화살표·Esc 를 눌러도 에피소드 시작/정지·재녹화·종료가 트리거되지 않는다. 증상은 두 단계로 나타난다.
@@ -481,6 +504,8 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot re
 
 stdin 패치가 X 의존성을 완전히 우회하므로 WSLg 가 아닌 헤드리스 Linux 서버 (디스플레이 없음) 에서도 동일하게 동작한다. ① 의 docker-compose X11 노출은 pynput import 자체가 시작 시 트레이스를 뱉지 않게 하는 안전망 역할만 한다 (없어도 패치는 동작하지만 헤드리스 폴백 메시지가 한 번 찍힘).
 
+---
+
 ## 카메라 sensor 가 raytracing pipeline 생성 실패 (RT 코어 없는 GPU)
 
 > ⚠ **H100/A100은 Isaac Sim 5.1 공식 미지원이다.** NVIDIA 공식 [System Requirements](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html)가 다음과 같이 명시:
@@ -534,6 +559,8 @@ GPU 별 RT 코어 유무 빠른 가이드 (NVIDIA 공식 시스템 요구사항 
 | GeForce RTX 4080 (최소) / 5080 (양호) / PRO 6000 Blackwell (이상적) | 컨슈머·Pro | ✓ | NVIDIA **권장** |
 | GeForce RTX 30 시리즈 | Ampere | ✓ | 권장 라인업 미만이지만 RT 코어·16GB(3080 12GB는 미달) 충족 시 동작 |
 
+
+---
 
 ## 시뮬레이션 기동 시 무시해도 되는 로그
 
