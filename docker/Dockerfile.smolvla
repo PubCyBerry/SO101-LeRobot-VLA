@@ -126,10 +126,21 @@ WORKDIR /workspace
 COPY docker/server-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# HF_HOME 을 /workspace/.cache/huggingface 로 옮긴 이유: lerobot 서비스와 동일.
+# 컨테이너를 호스트 UID (non-root) 로 실행하면 /root 를 traverse 못하기 때문.
+# hf_cache 명명 볼륨도 docker-compose 에서 같은 경로에 마운트된다.
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=0
+    PYTHONDONTWRITEBYTECODE=0 \
+    HF_HOME=/workspace/.cache/huggingface
+
+RUN mkdir -p /workspace/.cache/huggingface /workspace/datasets /workspace/logs /workspace/outputs \
+    && chmod -R 0777 /workspace
+
+# /root 권한 풀기 — non-root 가 uv managed Python (/root/.local/share/uv/python)
+# 을 traverse 할 수 있도록. 자세한 내용은 Dockerfile.lerobot 의 동일 RUN 참고.
+RUN chmod 0755 /root
 
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["policy-server"]

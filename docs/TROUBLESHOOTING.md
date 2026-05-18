@@ -263,6 +263,75 @@ docker compose run --rm leisaac-debug bash -c '
 
 `network_mode: host` 면 별도 포트 매핑 없이 그대로 노출된다. WebRTC 동적 미디어 협상이 NAT 뒤에서 깨지는 경우가 있어 host network 가 가장 안정적이다.
 
+## `lerobot record` 키보드 컨트롤이 동작하지 않음 (WSLg + Windows Terminal)
+
+**현상**: `docker compose ... run --rm lerobot record` 실행 후 우측/좌측 화살표·Esc 를 눌러도 에피소드 시작/정지·재녹화·종료가 트리거되지 않는다. 증상은 두 단계로 나타난다.
+
+**증상 ①** — DISPLAY 와 `/tmp/.X11-unix` 가 컨테이너에 노출되지 않은 경우, pynput import 자체가 실패하며 다음 트레이스 + `Switching to headless mode` 가 출력된다.
+
+```
+ImportError: this platform is not supported:
+('failed to acquire X connection: Bad display name ""', DisplayNameError(''))
+```
+
+**증상 ②** — DISPLAY/X11 소켓을 노출시켜 pynput 이 정상 import 된 뒤에도 키 입력이 묵묵부답. 콘솔에는 raw escape sequence (`^[[C` 등) 만 찍힌다.
+
+### 원인
+
+①: `lerobot/utils/control_utils.py` 의 `is_headless()` 는 `import pynput` 성공 여부로 헤드리스 환경을 판별한다. 컨테이너에 `DISPLAY` 가 없거나 `/tmp/.X11-unix` 가 마운트되지 않으면 import 가 실패 → `is_headless()` 가 `True` → `init_keyboard_listener()` 가 `None` 리스너를 반환.
+
+②: WSLg 의 X 서버는 X11 윈도우로부터 들어온 키 이벤트만 본다. **Windows Terminal 은 X11 클라이언트가 아니라 Windows 네이티브 콘솔**이라, 거기서 누른 키는 X 서버를 거치지 않고 Windows 와 그 자식 (WSL → docker → 컨테이너 PTY) 으로만 흘러간다. pynput 의 X RECORD 리스너는 X 서버 측 이벤트만 듣기 때문에 이 키들을 영원히 보지 못한다.
+
+### 해결 방법
+
+두 단계로 나눠 적용한다.
+
+**① docker-compose 에 X11 노출** (`docker/docker-compose.yaml`, `lerobot` 서비스):
+
+```yaml
+    volumes:
+      ...
+      # X11 소켓 — pynput import 시 X 연결 실패를 막기 위해 마운트
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      NVIDIA_VISIBLE_DEVICES:     all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      DISPLAY: ${DISPLAY:-:0}
+```
+
+이것만으로는 ② 가 해결되지 않으니 동시에:
+
+**② 컨테이너 안에 stdin 기반 키보드 리스너 패치 베이크 인** (`docker/Dockerfile.lerobot`):
+
+```dockerfile
+COPY docker/lerobot_keyboard_stdin.py /opt/venv/lib/python3.11/site-packages/lerobot_keyboard_stdin.py
+COPY docker/lerobot_keyboard_stdin.pth /opt/venv/lib/python3.11/site-packages/lerobot_keyboard_stdin.pth
+```
+
+패치 모듈은 `/dev/tty` 를 cbreak 모드로 열어 docker PTY 로 흘러온 raw escape sequence (`\x1b[C`/`\x1b[D`/`\x1b`) 를 읽어 lerobot 이 기대하는 `{exit_early, rerecord_episode, stop_recording}` 이벤트 딕셔너리를 그대로 토글한다. `.pth` 파일이 Python 시작 시 `install_hook()` 을 호출, `lerobot.utils.control_utils` 가 import 되는 순간 `init_keyboard_listener` 를 stdin 버전으로 교체한다.
+
+패치 적용 후 이미지를 재빌드해야 한다.
+
+```bash
+docker compose -f docker/docker-compose.yaml build lerobot
+```
+
+### 확인 방법
+
+```bash
+# 1. 패치 모듈이 이미지에 들어갔는지 확인
+docker compose -f docker/docker-compose.yaml run --rm --no-deps --entrypoint python lerobot \
+  -c "import lerobot.utils.control_utils as cu, lerobot_keyboard_stdin; \
+      print(cu.init_keyboard_listener is lerobot_keyboard_stdin.init_keyboard_listener_stdin)"
+# → True
+
+# 2. record 실행 → 첫 에피소드 진행 중 우측 화살표 →
+#    'Right arrow key pressed. Exiting loop...' 가 콘솔에 출력
+docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot record
+```
+
+stdin 패치가 X 의존성을 완전히 우회하므로 WSLg 가 아닌 헤드리스 Linux 서버 (디스플레이 없음) 에서도 동일하게 동작한다. ① 의 docker-compose X11 노출은 pynput import 자체가 시작 시 트레이스를 뱉지 않게 하는 안전망 역할만 한다 (없어도 패치는 동작하지만 헤드리스 폴백 메시지가 한 번 찍힘).
+
 ## 카메라 sensor 가 raytracing pipeline 생성 실패 (RT 코어 없는 GPU)
 
 > ⚠ **H100/A100은 Isaac Sim 5.1 공식 미지원이다.** NVIDIA 공식 [System Requirements](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html)가 다음과 같이 명시:

@@ -143,11 +143,37 @@ COPY docker/lerobot-entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/policy-client-shim.py /usr/local/bin/policy-client-shim.py
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/policy-client-shim.py
 
+# Stdin 기반 키보드 리스너 패치 — WSLg + Windows Terminal 에서 pynput 의 X11
+# RECORD 백엔드가 키 이벤트를 받지 못하는 문제를 우회한다 (자세한 내용은
+# docs/TROUBLESHOOTING.md 의 "pynput X 서버 미연결" 항목 참고).
+# `.pth` 가 Python 시작 시 install_hook() 을 호출 → lerobot.utils.control_utils
+# 가 import 되는 순간 init_keyboard_listener 가 stdin 버전으로 교체된다.
+COPY docker/lerobot_keyboard_stdin.py /opt/venv/lib/python3.11/site-packages/lerobot_keyboard_stdin.py
+COPY docker/lerobot_keyboard_stdin.pth /opt/venv/lib/python3.11/site-packages/lerobot_keyboard_stdin.pth
+
 # 런타임 환경 변수 고정
+# HF_HOME 을 /workspace/.cache/huggingface 로 옮긴 이유: 컨테이너를 호스트 UID
+# (non-root) 로 실행하면 /root 안을 traverse 할 수 없기 때문. docker-compose 의
+# hf_cache 명명 볼륨도 같은 경로에 마운트된다.
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=0
+    PYTHONDONTWRITEBYTECODE=0 \
+    HF_HOME=/workspace/.cache/huggingface
+
+# HF 캐시 / workspace 하위 디렉터리를 미리 생성 + 0777 로 풀어둔다.
+# 명명 볼륨 mount 시점에 이 mount-point 의 권한이 상속되므로 non-root 가
+# 그대로 read/write 가능하다. bind mount 디렉터리 자체도 host UID 로 실행되는
+# 컨테이너가 쓸 수 있게 미리 0777 로 풀어두면 첫 record 시 권한 문제를 막을 수 있다.
+RUN mkdir -p /workspace/.cache/huggingface /workspace/datasets /workspace/logs /workspace/outputs \
+    && chmod -R 0777 /workspace
+
+# uv 가 managed Python 을 /root/.local/share/uv/python/ 에 설치하는데
+# /root 가 0700 root:root 라 non-root 컨테이너(host UID) 가 traverse 못함.
+# venv 의 python3 가 이 경로를 가리키므로 shebang 해석 시 'bad interpreter:
+# Permission denied' 가 발생. /root 를 0755 로 풀어 traverse 가능하게 한다.
+# 컨테이너 안이라 보안 영향 없음.
+RUN chmod 0755 /root
 
 # 기본 실행: teleop 모드 (docker-compose CMD 또는 직접 override 가능)
 ENTRYPOINT ["entrypoint.sh"]

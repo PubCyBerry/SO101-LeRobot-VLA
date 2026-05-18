@@ -26,6 +26,19 @@ services:
     image: lerobot-so101:0.4.4
     container_name: so101_lerobot
     restart: "no"
+    # ── 사용자 매핑 ────────────────────────────────────────────────────────
+    # 호스트 UID/GID 로 실행 → bind-mount 된 datasets/logs/outputs 의 파일이
+    # 호스트 유저 소유로 생성된다. PyAV 가 mp4 를 0600 으로 만드는 문제도
+    # ownership 측면에서 해결 (소유자가 곧 호스트 유저).
+    # UID 는 bash 가 자동 설정하지만 GID 는 export 되지 않으므로 1000 fallback.
+    user: "${UID:-1000}:${GID:-1000}"
+    # ── 그룹 추가 ──────────────────────────────────────────────────────────
+    # /dev/ttyACM* (dialout, GID 20), /dev/video* (video, GID 44) 접근 권한.
+    # privileged:true 는 CAP_DAC_OVERRIDE 를 주지만 non-root UID 에는 DAC
+    # 우회 효과가 없으므로 group_add 로 명시. Ubuntu/Debian 표준 GID 사용.
+    group_add:
+      - "20"   # dialout
+      - "44"   # video
     # ── GPU ────────────────────────────────────────────────────────────────
     deploy:
       resources:
@@ -77,7 +90,14 @@ services:
       # HuggingFace 캐시: 명명 볼륨 `lerobot_hf_cache` (호스트 측 디렉터리는 docker
       # 가 관리). 컨테이너 재생성 후에도 캐시가 유지되고, 두 서비스가 동일 볼륨을
       # 공유하므로 한 번 받은 모델을 양쪽이 모두 사용한다.
-      - hf_cache:/root/.cache/huggingface
+      # 경로를 /root/.cache → /workspace/.cache 로 옮긴 이유: 컨테이너를 호스트
+      # UID 로 실행하면 non-root 가 /root 디렉터리에 들어갈 수 없기 때문.
+      - hf_cache:/workspace/.cache/huggingface
+      # X11 소켓 — pynput 키보드 리스너 (record/teleop 의 에피소드 제어).
+      # WSLg 는 호스트 측에 /tmp/.X11-unix/X0 (mode 0777) 을 노출하므로
+      # xhost 추가 설정 없이 그대로 마운트 가능. 네이티브 Linux 데스크탑에서는
+      # 사전에 `xhost +SI:localuser:root` 가 필요할 수 있음.
+      - /tmp/.X11-unix:/tmp/.X11-unix
     # ── 환경 변수 ──────────────────────────────────────────────────────────
     # `.env` 값은 env_file 로만 주입한다. 셸 환경의 동명 변수가 docker compose
     # 의 ${VAR} 보간을 가로채는 일을 피하기 위해 `environment:` 에는 .env 와
@@ -88,6 +108,17 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES:     all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      # pynput 가 X 서버에 접속할 수 있도록 호스트 DISPLAY 전달.
+      # WSLg: 호스트 DISPLAY=:0, /tmp/.X11-unix/X0 소켓이 자동 노출됨.
+      DISPLAY: ${DISPLAY:-:0}
+      # ── Rerun publish 튜닝 ────────────────────────────────────────────
+      # lerobot.utils.visualization_utils.init_rerun 의 기본 flush 단위는
+      # 8 KB 라 카메라 frame (JPEG ~50 KB) 마다 6+ 회 flush → gRPC publish
+      # 빈도가 stutter 를 유발한다. 128 KB 로 키워 frame 1-2 장 단위로 묶어
+      # publish 함으로써 host.docker.internal 네트워크 round-trip 감소.
+      # 환경변수 미설정 시 lerobot 가 init_rerun 안에서 다시 8000 으로
+      # set 하므로 (line 39 fallback) 여기서 명시적으로 주입한다.
+      RERUN_FLUSH_NUM_BYTES: "131072"
     # ── 네트워크 ───────────────────────────────────────────────────────────
     network_mode: host   # 카메라 스트림·ROS 브릿지 등 외부 연결 시 편의
 
@@ -148,6 +179,10 @@ services:
     image: lerobot-policy-server:0.4.4
     container_name: so101_policy_server
     restart: "no"
+    # ── 사용자 매핑 ────────────────────────────────────────────────────────
+    # lerobot 서비스와 동일하게 호스트 UID/GID 로 실행. train/eval 의 outputs/
+    # 도 호스트 유저 소유로 생성된다.
+    user: "${UID:-1000}:${GID:-1000}"
     # ── GPU (SmolVLA 추론) ────────────────────────────────────────────────
     deploy:
       resources:
@@ -166,7 +201,7 @@ services:
       - ../outputs:/workspace/outputs
       # HuggingFace 캐시: lerobot 서비스와 동일한 명명 볼륨 공유.
       # prepare-model 모드로 받은 가중치를 양쪽 서비스가 그대로 읽어 들인다.
-      - hf_cache:/root/.cache/huggingface
+      - hf_cache:/workspace/.cache/huggingface
     # ── 환경 변수 ────────────────────────────────────────────────────────
     env_file:
       - ../.env
