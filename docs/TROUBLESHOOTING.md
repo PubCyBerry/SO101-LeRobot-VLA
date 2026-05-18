@@ -58,6 +58,155 @@ wsl --shutdown
 python -c "import lerobot, torch; print('lerobot', lerobot.__version__, '/ torch', torch.__version__)"
 ```
 
+## uv-compile Too many open files panic (다코어 호스트, 모든 uv RUN)
+
+**현상**: `docker compose build lerobot` 에서 uv 가 bytecode 를 컴파일하는 어느 단계에서든 수십~수백 개 스레드가 동시에 panic 하며 실패. 코어 수가 많은 빌드 호스트 (예: 224 코어 Linux 서버) 에서만 재현된다. 데스크탑(16 스레드급) 에서는 무사 통과한다.
+
+재현 단계는 두 군데 모두에서 일어난다:
+
+1. **Stage 3 `python-setup`** — `uv python install 3.11` 이 managed CPython 의 stdlib `.pyc` 를 빌드 시점에 미리 컴파일하다 fd 소진.
+2. **Stage 4 `torch-layer` / Stage 5 `teleop-deps`(또는 `policy-deps`)** — `uv pip install` / `uv sync` 가 설치 직후 venv `/opt/venv/lib/python3.11/site-packages` 안의 모든 `.py` 를 컴파일하다 fd 소진. torch + nvidia-* + numpy 등 무거운 패키지가 들어오면 더 빨리 터진다.
+
+**오류 메시지** (둘 다 같은 line 에서 panic):
+
+```
+thread 'uv-compile' (403) panicked at crates/uv-installer/src/compile.rs:139:26:
+Failed to build runtime: Os { code: 24, kind: Uncategorized, message: "Too many open files" }
+...
+error: Failed to bytecode-compile Python file in: /opt/venv/lib/python3.11/site-packages
+  Caused by: Failed to start Python interpreter to run compile script
+  Caused by: Too many open files (os error 24)
+```
+
+Stage 3 변종은 `Failed to bytecode-compile Python standard library for: cpython-...` 로 시작한다 — 메시지의 대상 디렉터리만 다르고 근본 원인은 동일.
+
+### 원인
+
+`UV_COMPILE_BYTECODE=1` 이 설정돼 있으면 uv 는 (a) managed CPython 설치 직후 stdlib 를, (b) 매 패키지 설치 직후 venv site-packages 를 `.pyc` 로 미리 컴파일한다 (컨테이너 기동 속도 최적화 목적). uv 의 컴파일러는 `std::thread::available_parallelism()` 만큼 워커 스레드를 띄우고 **각 워커가 자체 Tokio runtime 을 생성**한다. Tokio runtime 하나당 epoll/eventfd 등으로 fd 를 수 개 소모하므로, 호스트가 224 코어이면 224 × ~3 fd ≈ 600+ fd 가 순식간에 사용된다 (실측에서는 패키지 설치 후 컴파일 시 thread ID 가 400+ 까지 올라가 더 많은 fd 필요).
+
+Docker 컨테이너의 기본 file descriptor soft limit 은 **1024** (hard limit 은 호스트가 1048576 이어도 무관) 이고, BuildKit 빌더도 같은 기본값을 상속한다. 호스트 셸의 `ulimit -n` 이 1048576 으로 보여도 빌드 안에서는 1024 가 적용된다.
+
+`RAYON_NUM_THREADS` 는 uv-compile 의 자체 워커 풀에는 영향을 주지 않으므로 해결책이 못 된다 (검증 완료). `docker-compose.yaml` 의 `build:` 블록도 `ulimits` 키를 지원하지 않아 외부에서 한도를 올릴 수단이 없다.
+
+### 해결 방법
+
+`Dockerfile.lerobot` / `Dockerfile.smolvla` 의 **uv 를 호출하는 모든 RUN 명령** 안에서 `ulimit -Sn` 으로 soft 한도를 직접 끌어올린다. hard 한도가 이미 1048576 이므로 soft 만 raise 하면 된다.
+
+> ⚠ **`ulimit` 은 RUN 경계를 넘지 못한다.** Dockerfile 의 RUN 은 매번 새 sh 프로세스를 띄우므로 직전 RUN 에서 올린 soft 한도가 다음 RUN 으로 상속되지 않는다. ENV 도 ulimit 에는 영향을 못 준다. 따라서 Stage 3 뿐 아니라 Stage 4 (`uv pip install torch ...`), Stage 5 (`uv sync ...`) **각 RUN 마다 동일 prefix 를 다시 적어줘야 한다**. 처음 발견했을 때 Stage 3 만 패치하고 Stage 4 에서 같은 panic 이 재발하는 패턴이 흔하다.
+
+```dockerfile
+# ── Stage 3 (python-setup): stdlib pyc 컴파일 ──────────────
+RUN ulimit -Sn 65536 \
+    && uv python install 3.11 \
+    && uv venv --python 3.11 ${VIRTUAL_ENV}
+
+# ── Stage 4 (torch-layer): site-packages pyc 컴파일 ────────
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 UV_CONCURRENT_DOWNLOADS=2 \
+       uv pip install "torch==2.7.0" "torchvision==0.22.0" \
+           --index-url "https://download.pytorch.org/whl/cu128"
+
+# ── Stage 5 (teleop-deps / policy-deps): site-packages pyc 컴파일 ──
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 UV_CONCURRENT_DOWNLOADS=2 \
+       uv sync --active --group teleop --group async --no-install-project
+```
+
+`ulimit` 은 sh builtin 이라 추가 의존성 없이 동작한다. 65536 이면 224 코어 호스트가 워커당 ~3 fd 를 쓰는 worst case (≈ 700 fd) 의 90× 여유라 안전하다.
+
+### 확인 방법
+
+```bash
+# 빌드 — Stage 3 / 4 / 5 가 모두 통과하면 OK
+docker compose --env-file .env -f docker/docker-compose.yaml build lerobot 2>&1 \
+  | grep -E "(python-setup|torch-layer|teleop-deps|Bytecode compiled|Installed [0-9]+|DONE [0-9]+)"
+# 정상 출력 예시:
+#   #11 [python-setup 1/1] RUN ulimit -Sn 65536     && uv python install 3.11 ...
+#   #11 27.06 Bytecode compiled 1448 files in 422ms
+#   #11 DONE 27.2s
+#   #14 [torch-layer 3/3] RUN --mount=...,target=/root/.cache/uv ... ulimit -Sn 65536 && ...
+#   #14 ... Installed 28 packages in 1.87s
+#   #14 DONE ...
+```
+
+빌드 컨테이너 내부의 fd 한도를 직접 확인하려면:
+
+```bash
+docker run --rm nvidia/cuda:12.8.0-runtime-ubuntu24.04 sh -c 'ulimit -Sn; ulimit -Hn'
+# 1024
+# 1048576
+```
+
+soft 1024 가 그대로면 위 패치가 적용되지 않은 상태다. RUN 안에 `ulimit -Sn` 라인이 빠진 곳을 찾아야 한다.
+
+## `uv pip install torch` 단계에서 nvidia CUDA 휠 다운로드 timeout
+
+**현상**: `docker compose build lerobot` 의 Stage 4 (`torch-layer`) 에서 `uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128` 이 100~130초 진행되다 nvidia-* 휠 (cublas / cudnn / cusparse / nvjitlink / cusparselt 등) 중 하나에서 timeout 으로 실패. 매번 실패하는 패키지가 달라진다 (cusparse → cublas → nvjitlink ...). 호스트에서 동일 URL 을 `curl` 로 받으면 1~35초 안에 정상 응답이 온다.
+
+**오류 메시지**:
+
+```
+× Failed to download `nvidia-nvjitlink-cu12==12.8.61`
+├─▶ Request failed after 3 retries in 126.1s
+├─▶ Failed to fetch:
+│   `https://pypi.nvidia.com/nvidia-nvjitlink-cu12/nvidia_nvjitlink_cu12-12.8.61-py3-none-...whl`
+├─▶ error sending request for url (...) operation timed out
+╰─▶ operation timed out
+help: `nvidia-nvjitlink-cu12` (v12.8.61) was included because `torch` (v2.7.0+cu128) depends on `nvidia-nvjitlink-cu12`
+```
+
+### 원인
+
+torch 2.7.0+cu128 은 transitively 28개 패키지를 끌어오는데 그중 NVIDIA CUDA 휠 합계가 ~3 GB 다 (torch 1 GB / cudnn 693 MB / nccl 192 MB / cufft 184 MB / cusparse 278 MB / cublas 581 MB / ...).
+
+uv 는 기본적으로 **8개 이상을 동시에 다운로드**한다. `pypi.nvidia.com` (NVIDIA 가 운영하는 CDN) 은 동일 client IP 가 large file 을 다수 동시에 요청하면 일부 connection 을 throttle / silent-stall 시킨다. uv 의 기본 HTTP timeout 은 **30초** (정확히는 connect+read 별도 30s/30s) 라, stall 된 connection 이 retry 3회 안에 회복되지 못하면 빌드 전체가 실패한다.
+
+호스트의 단발 `curl` 은 connection 1개라 throttle 대상이 아니다 — 그래서 같은 URL 이 호스트에서는 정상이고 빌드 안에서만 실패하는 현상이 나타난다. MTU 나 DNS 같은 네트워크 레이어 문제는 아니다 (busybox/alpine 컨테이너에서 wget 단발 다운로드는 35초 안에 성공함으로 확인).
+
+추가 가중치: Stage 4 RUN 에 `--no-cache` 플래그가 걸려 있어 빌드 실패 후 재시도해도 이미 받은 휠을 못 쓰고 처음부터 ~3 GB 를 다시 받는다. 외부 네트워크가 잠시만 흔들려도 빌드 전체가 round-trip 한다.
+
+### 해결 방법
+
+`docker/Dockerfile.lerobot` / `docker/Dockerfile.smolvla` 의 Stage 4 (`torch-layer`) 와 Stage 5 (`teleop-deps` / `policy-deps`) RUN 에 세 가지를 함께 적용한다.
+
+```dockerfile
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    UV_HTTP_TIMEOUT=600 \
+    UV_CONCURRENT_DOWNLOADS=2 \
+    uv pip install \
+        "torch==2.7.0" \
+        "torchvision==0.22.0" \
+        --index-url "https://download.pytorch.org/whl/cu128"
+```
+
+- **`--mount=type=cache,target=/root/.cache/uv`** — BuildKit 영구 캐시. 한 번 받은 휠은 이미지에는 들어가지 않으면서 다음 빌드에서 재사용된다. 부분 성공 후 재시도가 거의 즉시 끝나 외부 네트워크 흔들림에 강건해진다. 동시에 기존 `--no-cache` 플래그는 제거한다 (이게 있으면 uv 가 cache 디렉터리에 쓰지 않아 캐시 마운트가 무용지물).
+- **`UV_HTTP_TIMEOUT=600`** — 단일 요청 타임아웃 10분. 큰 휠 (대용량 cudnn / cublas) 의 slow connection 도 끊지 않고 끝까지 받는다.
+- **`UV_CONCURRENT_DOWNLOADS=2`** — 동시 다운로드를 2개로 제한. CDN throttling 의 트리거 조건 (다수 동시 large-file) 자체를 피한다. 다운로드 총 시간은 5~10% 길어지지만 안정성이 압도적으로 향상된다.
+
+Stage 5 (`uv sync`) 도 동일 패턴을 적용. lerobot[feetech] / lerobot[smolvla] 가 PyPI 본 인덱스를 쓰므로 throttle 가능성은 낮지만, 같은 캐시 마운트로 재빌드 시간을 단축할 수 있다.
+
+### 확인 방법
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.yaml build lerobot 2>&1 \
+  | grep -E "(torch-layer|Downloaded|Installed [0-9]+ packages|DONE [0-9]+)"
+# 정상 출력 예시:
+#   #14 [torch-layer 3/3] RUN --mount=type=cache,target=/root/.cache/uv ...
+#   ... Downloaded nvidia-cudnn-cu12 / nvidia-cublas-cu12 / ...
+#   #14 Installed 28 packages in ...
+#   #14 DONE 180s
+
+# 캐시가 실제로 재사용되는지 확인 (두 번째 빌드)
+docker buildx prune --filter=type=exec.cachemount=false -f >/dev/null  # 이미지 캐시만 정리, mount 캐시 유지
+docker compose --env-file .env -f docker/docker-compose.yaml build lerobot --no-cache 2>&1 \
+  | grep -E "torch-layer.*DONE"
+# Stage 4 가 수십 초 안에 끝나면 캐시 마운트 정상 동작.
+```
+
+캐시 마운트는 BuildKit 빌더가 살아 있는 동안만 유지되므로 빌더를 재생성하면 (`docker buildx rm` / 호스트 재부팅) 다시 받아야 한다. 그래도 한 빌더 안에서는 부분 실패 → 재시도가 즉시 통과한다.
+
 ## 카메라 대역폭 제한
 
 **현상**: `lerobot-find-cameras` 실행 시 카메라가 탐지는 되지만 일부만 캡처에 성공함

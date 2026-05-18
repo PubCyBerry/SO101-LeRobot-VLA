@@ -84,8 +84,15 @@ ENV VIRTUAL_ENV=/opt/venv \
     # copy 모드: hardlink 불가 환경(overlay fs) 대비
     UV_LINK_MODE=copy
 
-# Pin Python 3.11 (uv downloads the managed CPython build)
-RUN uv python install 3.11 \
+# Pin Python 3.11 (uv downloads the managed CPython build).
+# `ulimit -Sn 65536`: uv 가 stdlib pyc 컴파일 단계에서 호스트 CPU 수만큼 워커를
+# 띄우고 각 워커가 자체 Tokio runtime 을 만들어 fd 를 빠르게 소모한다. Docker 의
+# 기본 soft fd 한도(1024) 로는 다코어 호스트(예: 224 코어)에서 "Too many open files"
+# panic 이 발생. hard 한도(1048576) 범위 안에서 soft 를 끌어올려 회피.
+# 자세한 내용은 docs/TROUBLESHOOTING.md 의 "uv python install Too many open files"
+# 항목 참고.
+RUN ulimit -Sn 65536 \
+    && uv python install 3.11 \
     && uv venv --python 3.11 ${VIRTUAL_ENV}
 
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
@@ -100,11 +107,27 @@ WORKDIR /build
 # pyproject.toml 만 먼저 복사 (index 정보 참조용)
 COPY pyproject.toml ./
 
-# torch / torchvision 을 teleop 그룹 버전과 동일하게 선행 설치
-RUN uv pip install --no-cache \
-        "torch==2.7.0" \
-        "torchvision==0.22.0" \
-        --index-url "https://download.pytorch.org/whl/cu128"
+# torch / torchvision 을 teleop 그룹 버전과 동일하게 선행 설치.
+#
+# ■ 안정성 옵션 (--mount=cache + ENV 들):
+#   torch + nvidia-cudnn/cublas/nccl/cusparse 등 CUDA 휠 합계 ~3GB 를 받는데
+#   pypi.nvidia.com CDN 이 동일 IP 의 동시 large-file 다운로드를 throttle 한다.
+#   uv 기본값 (동시 다운로드 ≥8, HTTP timeout 30s) 으로는 일부 connection 이
+#   "operation timed out" 으로 끊겨 빌드가 통째로 실패한다. 자세한 내용은
+#   docs/TROUBLESHOOTING.md "pypi.nvidia.com torch CUDA 휠 다운로드 timeout" 참고.
+#
+#   - --mount=type=cache : BuildKit 영구 캐시. 한 번 받은 휠은 이미지에는 들어가지
+#                          않으면서 다음 빌드에서 재사용. `--no-cache` 플래그 제거.
+#   - UV_HTTP_TIMEOUT=600 : 단일 요청 타임아웃 10분 (기본 30s → 큰 휠 안전)
+#   - UV_CONCURRENT_DOWNLOADS=2 : 동시 다운로드 2개로 제한 → CDN throttling 회피
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 \
+       UV_CONCURRENT_DOWNLOADS=2 \
+       uv pip install \
+           "torch==2.7.0" \
+           "torchvision==0.22.0" \
+           --index-url "https://download.pytorch.org/whl/cu128"
 
 
 # ── Stage 5: teleop + async 그룹 설치 ───────────────────────────────────────
@@ -121,12 +144,19 @@ FROM torch-layer AS teleop-deps
 # 재현성이 필요하면 --frozen + COPY uv.lock 패턴으로 전환 가능.
 COPY pyproject.toml ./
 
-RUN uv sync \
-        --active \
-        --group teleop \
-        --group async \
-        --no-install-project \
-        --no-cache
+# Stage 4 와 동일한 안정성 옵션. BuildKit 캐시 마운트로 휠 재다운로드 회피.
+# ulimit -Sn 65536: uv 가 설치 후 패키지의 .pyc 를 컴파일할 때 fd 폭주 회피
+# (Stage 3 의 동일 RUN 주석 참고 — UV_COMPILE_BYTECODE=1 이 stage 간 ENV 로
+# 상속되므로 모든 uv 호출 RUN 에 동일 ulimit 가 필요하다).
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 \
+       UV_CONCURRENT_DOWNLOADS=2 \
+       uv sync \
+           --active \
+           --group teleop \
+           --group async \
+           --no-install-project
 
 
 # ── Stage 6: 앱 레이어 (자주 변경되는 파일) ──────────────────────────────────

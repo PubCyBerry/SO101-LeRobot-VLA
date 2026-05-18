@@ -80,7 +80,11 @@ ENV VIRTUAL_ENV=/opt/venv \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
-RUN uv python install 3.11 \
+# `ulimit -Sn 65536`: 다코어 호스트에서 uv 의 stdlib pyc 컴파일이 fd 를 폭주시켜
+# "Too many open files" 로 panic 하는 문제 회피. Dockerfile.lerobot 의 동일 RUN
+# 주석 참고.
+RUN ulimit -Sn 65536 \
+    && uv python install 3.11 \
     && uv venv --python 3.11 ${VIRTUAL_ENV}
 
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
@@ -93,10 +97,17 @@ WORKDIR /build
 
 COPY pyproject.toml ./
 
-RUN uv pip install --no-cache \
-        "torch==2.7.0" \
-        "torchvision==0.22.0" \
-        --index-url "https://download.pytorch.org/whl/cu128"
+# BuildKit 캐시 마운트 + 동시 다운로드 제한 + 긴 timeout + ulimit raise —
+# Dockerfile.lerobot 의 동일 RUN 주석 참고 (pypi.nvidia.com CDN throttling +
+# uv-compile 의 fd 폭주 둘 다 회피).
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 \
+       UV_CONCURRENT_DOWNLOADS=2 \
+       uv pip install \
+           "torch==2.7.0" \
+           "torchvision==0.22.0" \
+           --index-url "https://download.pytorch.org/whl/cu128"
 
 
 # ── Stage 5: SmolVLA + async 그룹 설치 ──────────────────────────────────────
@@ -108,12 +119,15 @@ FROM torch-layer AS policy-deps
 
 COPY pyproject.toml ./
 
-RUN uv sync \
-        --active \
-        --group smolvla \
-        --group async \
-        --no-install-project \
-        --no-cache
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    ulimit -Sn 65536 \
+    && UV_HTTP_TIMEOUT=600 \
+       UV_CONCURRENT_DOWNLOADS=2 \
+       uv sync \
+           --active \
+           --group smolvla \
+           --group async \
+           --no-install-project
 
 
 # ── Stage 6: 앱 레이어 (정책 서버 전용 entrypoint) ─────────────────────────
