@@ -138,6 +138,21 @@ info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# ── GPU 확인 (선택적) ─────────────────────────────────────────────────────────
+# lerobot 이미지의 모든 모드(teleop / record / replay / calibrate / policy-client)는
+# 로컬 GPU 를 직접 사용하지 않는다. GPU 추론은 lerobot-policy-server 가 담당.
+# LEROBOT_SHOW_GPU_INFO=1 로 설정할 때만 nvidia-smi 를 호출해 cold start 오버헤드를 줄인다.
+check_gpu_optional() {
+    [[ "${LEROBOT_SHOW_GPU_INFO:-0}" != "1" ]] && return 0
+    if command -v nvidia-smi &>/dev/null; then
+        info "NVIDIA GPU 감지됨:"
+        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | \
+            while IFS= read -r line; do info "  GPU: $line"; done
+    else
+        warn "nvidia-smi 를 찾을 수 없습니다."
+    fi
+}
+
 # ── 직렬 포트 존재 확인 ───────────────────────────────────────────────────────
 check_port() {
     local port="$1" label="$2"
@@ -166,13 +181,7 @@ check_camera() {
     if [[ ! -r "$dev" ]]; then
         warn "${label} 디바이스 '${dev}' 읽기 권한 없음 (--privileged 확인)"
     else
-        if command -v v4l2-ctl &>/dev/null; then
-            local card
-            card=$(v4l2-ctl -d "$dev" --info 2>/dev/null | grep "Card type" | sed 's/.*: //' | xargs)
-            info "${label} 카메라 OK: ${dev} — ${card:-unknown}"
-        else
-            info "${label} 카메라 OK: ${dev}"
-        fi
+        info "${label} 카메라 OK: ${dev}"
     fi
 }
 
@@ -241,21 +250,16 @@ check_dataset_repo_id() {
     info "Dataset repo ID: ${DATASET_REPO_ID}"
 }
 
-# ── GPU 확인 ──────────────────────────────────────────────────────────────────
-check_gpu() {
-    if command -v nvidia-smi &>/dev/null; then
-        info "NVIDIA GPU 감지됨:"
-        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | \
-            while IFS= read -r line; do info "  GPU: $line"; done
-    else
-        warn "nvidia-smi 를 찾을 수 없습니다. CPU 전용으로 실행됩니다."
-    fi
-}
-
 # ── LeRobot 버전 및 CLI entry point 확인 ──────────────────────────────────────
 check_lerobot() {
     local ver
-    ver=$(python -c "import lerobot; print(lerobot.__version__)" 2>/dev/null || echo "unknown")
+    # 빌드 시점에 기록한 버전 파일을 우선 읽어 Python 기동 오버헤드를 제거.
+    # 파일이 없으면(구버전 이미지 등) importlib.metadata 로 폴백 — full import 보다 빠름.
+    if [[ -f /opt/lerobot_version.txt ]]; then
+        ver=$(cat /opt/lerobot_version.txt)
+    else
+        ver=$(python -c "import importlib.metadata; print(importlib.metadata.version('lerobot'))" 2>/dev/null || echo "unknown")
+    fi
     info "LeRobot 버전: ${ver}"
 
     if ! command -v lerobot-teleoperate &>/dev/null; then
@@ -270,10 +274,15 @@ echo "========================================================"
 echo "  LeRobot 0.4.4 SO-101 Container"
 echo "========================================================"
 
-check_gpu
-check_lerobot
-
 CMD="${1:-teleop}"
+
+# 빠른 진입 모드(bash/python/find-*/info)는 모든 체크를 건너뜀.
+# 하드웨어 모드에서는 lerobot CLI 존재만 확인(필수) + GPU 정보(선택, LEROBOT_SHOW_GPU_INFO=1).
+# lerobot 이미지의 어떤 모드도 로컬 GPU 를 직접 사용하지 않으므로 GPU 체크는 기본 off.
+case "$CMD" in
+  bash|shell|python|find-port|find-cameras|info|edit-dataset) ;;
+  *) check_gpu_optional; check_lerobot ;;
+esac
 
 case "$CMD" in
 

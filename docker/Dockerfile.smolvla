@@ -27,12 +27,12 @@
 #
 # ■ 레이어 캐시 설계 (Dockerfile.lerobot 과 Stage 1-4 공유)
 # ─────────────────────────────────────────
-#   Stage base      : apt 시스템 패키지          → 거의 변경 없음
-#   Stage uv        : uv 바이너리                → 거의 변경 없음
-#   Stage python    : Python 3.11 + venv         → 거의 변경 없음
-#   Stage torch     : torch / torchvision        → PyTorch 버전 변경 시만
-#   Stage policy    : lerobot[smolvla] + grpcio  → lerobot/transformers 변경 시만
-#   Stage app       : entrypoint / udev 규칙     → 자주 변경
+#   Stage base      : apt 빌드 전용 도구             → 거의 변경 없음
+#   Stage uv        : uv 바이너리                    → 거의 변경 없음
+#   Stage python    : Python 3.11 + venv             → 거의 변경 없음
+#   Stage torch     : torch / torchvision            → PyTorch 버전 변경 시만
+#   Stage policy    : lerobot[smolvla] + grpcio      → lerobot/transformers 변경 시만
+#   Stage app       : 클린 CUDA 베이스 + venv 복사  → 자주 변경 (~400 MB 절감)
 # =============================================================================
 
 # ── Stage 1: System dependencies ─────────────────────────────────────────────
@@ -43,33 +43,33 @@ FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Seoul
 
+# ── 빌드 전용 패키지만 설치 (런타임 패키지는 app 스테이지에서 별도 설치) ──────────
+# app 스테이지는 이 base 를 상속하지 않으므로 컴파일에 필요한 패키지만 설치.
+# 런타임 전용(ffmpeg, libsm6, libgl1 등)을 제외해 빌드 캐시를 경량화.
+# flash-attn 빌드가 필요할 때는 build-essential + python3-dev 가 여기 있으면 된다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        # Build essentials (sdist fallback 및 향후 flash-attn 대비)
+        # 빌드 핵심 도구 (sdist fallback 및 향후 flash-attn 대비; curl 불필요)
         build-essential \
         git \
-        curl \
         ca-certificates \
-        # Python native-extension deps
+        # Python 네이티브 확장 컴파일 의존
         python3-dev \
         libffi-dev \
         libssl-dev \
-        # OpenCV / video (lerobot import 단계의 cv2 / ffmpeg 의존)
-        ffmpeg \
-        libsm6 \
-        libxext6 \
-        libgl1 \
-        libglib2.0-0 \
+        # AV 코덱 헤더 (PyAV 등 sdist 빌드 대비)
         libavcodec-dev \
         libavformat-dev \
         libswscale-dev \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Stage 2: uv package manager ──────────────────────────────────────────────
+# curl | sh 대신 BuildKit COPY --from 으로 uv 바이너리를 직접 복사.
+# Dockerfile.lerobot 과 동일 패턴 — 캐시 공유 및 curl 의존성 제거.
 FROM base AS uv-installer
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | \
-    UV_INSTALL_DIR=/usr/local/bin sh \
-    && uv --version
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN uv --version
 
 # ── Stage 3: Python 3.11 + virtual-env ───────────────────────────────────────
 FROM uv-installer AS python-setup
@@ -83,9 +83,17 @@ ENV VIRTUAL_ENV=/opt/venv \
 # `ulimit -Sn 65536`: 다코어 호스트에서 uv 의 stdlib pyc 컴파일이 fd 를 폭주시켜
 # "Too many open files" 로 panic 하는 문제 회피. Dockerfile.lerobot 의 동일 RUN
 # 주석 참고.
+# ① 크리티컬 작업 — 실패 시 빌드가 실제로 중단되어야 함
 RUN ulimit -Sn 65536 \
     && uv python install 3.11 \
     && uv venv --python 3.11 ${VIRTUAL_ENV}
+
+# ② stdlib 불필요 모듈 제거 (클린업 — 실패해도 빌드 계속)
+# Dockerfile.lerobot 과 동일 분리 패턴 — 상세 내용은 해당 파일 참고.
+RUN find /root/.local/share/uv/python -type d \
+        \( -name test -o -name idlelib -o -name tkinter \
+           -o -name turtledemo -o -name lib2to3 -o -name ensurepip \) \
+        -maxdepth 8 | xargs rm -rf 2>/dev/null; true
 
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
 
@@ -117,8 +125,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 # teleop / isaac / dev 그룹은 배제.
 FROM torch-layer AS policy-deps
 
-COPY pyproject.toml ./
-
+# pyproject.toml 은 torch-layer 에서 상속되므로 재복사 불필요.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     ulimit -Sn 65536 \
     && UV_HTTP_TIMEOUT=600 \
@@ -129,32 +136,78 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
            --group async \
            --no-install-project
 
+# venv 내 런타임 불필요 파일 제거 → COPY --from 전송량 감소:
+#   tests/ / test/ / benchmarks/ : transformers 등 대형 패키지 포함 테스트 디렉터리
+#   *.pyi                         : 타입 스텁 (런타임 미사용)
+#   dist-info/RECORD              : pip 매니페스트 (패키지당 수십 KB, 런타임 불필요)
+RUN sp=/opt/venv/lib/python3.11/site-packages; \
+    find "$sp" -maxdepth 2 -type d \( -name tests -o -name test -o -name benchmarks \) \
+        | xargs rm -rf 2>/dev/null; \
+    find "$sp" -name "*.pyi" -delete 2>/dev/null; \
+    find "$sp" -path "*/dist-info/RECORD" -delete 2>/dev/null; \
+    true
 
-# ── Stage 6: 앱 레이어 (정책 서버 전용 entrypoint) ─────────────────────────
-FROM policy-deps AS app
+
+# ── Stage 6: Slim runtime (이미지 크기 최적화) ──────────────────────────────
+# build-essential / git / -dev 헤더 등 빌드 전용 패키지를 최종 이미지에서 제거.
+# Dockerfile.lerobot 과 동일한 slim 전략 — USB/serial/speech 패키지는 정책 서버에 불필요.
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04 AS app
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Seoul
+
+# 런타임 전용 패키지 (빌드 도구 없음):
+#   libssl3 / libffi8          : uv managed CPython 동적 링크 (ssl / ctypes 모듈)
+#   libncurses6 / libbz2-1.0 / liblzma5 / zlib1g : CPython 표준 라이브러리 의존
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        # OpenCV / video runtime (lerobot import 단계의 cv2 / ffmpeg 의존)
+        ffmpeg \
+        libsm6 \
+        libxext6 \
+        libgl1 \
+        libglib2.0-0 \
+        # uv managed CPython 동적 링크 의존
+        libssl3 \
+        libffi8 \
+        libncurses6 \
+        libbz2-1.0 \
+        liblzma5 \
+        zlib1g \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
+# venv (Python 3.11 + 전체 패키지) 및 uv managed CPython 을 빌드 스테이지에서 복사.
+COPY --from=policy-deps /opt/venv /opt/venv
+COPY --from=policy-deps /root/.local/share/uv/python /root/.local/share/uv/python
+
 # 정책 서버 전용 진입점 (prepare-model / policy-server / info / bash / python).
-# teleop 이미지의 lerobot-entrypoint.sh 와 분리해 의존성·책임 격리를 유지한다.
 COPY docker/server-entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # HF_HOME 을 /workspace/.cache/huggingface 로 옮긴 이유: lerobot 서비스와 동일.
 # 컨테이너를 호스트 UID (non-root) 로 실행하면 /root 를 traverse 못하기 때문.
-# hf_cache 명명 볼륨도 docker-compose 에서 같은 경로에 마운트된다.
+# PYTHONNOUSERSITE=1 : user site-packages 경로 스캔 생략 → Python 시작 속도 향상
+# PYTHONUTF8=1       : locale 감지 없이 UTF-8 강제 → Python 시작 시 locale 서브프로세스 생략
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=0 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONUTF8=1 \
     HF_HOME=/workspace/.cache/huggingface
 
-RUN mkdir -p /workspace/.cache/huggingface /workspace/datasets /workspace/logs /workspace/outputs \
-    && chmod -R 0777 /workspace
-
-# /root 권한 풀기 — non-root 가 uv managed Python (/root/.local/share/uv/python)
-# 을 traverse 할 수 있도록. 자세한 내용은 Dockerfile.lerobot 의 동일 RUN 참고.
-RUN chmod 0755 /root
+# 모든 설정을 하나의 RUN 으로 통합 → 이미지 레이어 수 감소:
+#   1) 실행 권한 부여
+#   2) workspace 디렉터리 생성 + 권한 개방
+#   3) lerobot 버전 파일 생성 (cold start 최적화)
+#   4) /root traverse 허용 (non-root 컨테이너용)
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+    && mkdir -p /workspace/.cache/huggingface /workspace/datasets /workspace/logs /workspace/outputs \
+    && chmod -R 0777 /workspace \
+    && python -c "import importlib.metadata; open('/opt/lerobot_version.txt','w').write(importlib.metadata.version('lerobot'))" \
+    && chmod 0755 /root
 
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["policy-server"]

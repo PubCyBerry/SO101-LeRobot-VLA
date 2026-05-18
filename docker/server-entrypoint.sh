@@ -82,7 +82,12 @@ check_gpu() {
 # ── LeRobot import 가능 여부 확인 (정책 서버 이미지는 lerobot[smolvla]만 설치) ──
 check_lerobot() {
     local ver
-    ver=$(python -c "import lerobot; print(lerobot.__version__)" 2>/dev/null || echo "unknown")
+    # 빌드 시점에 기록한 버전 파일을 우선 읽어 Python 기동 오버헤드를 제거.
+    if [[ -f /opt/lerobot_version.txt ]]; then
+        ver=$(cat /opt/lerobot_version.txt)
+    else
+        ver=$(python -c "import importlib.metadata; print(importlib.metadata.version('lerobot'))" 2>/dev/null || echo "unknown")
+    fi
     info "LeRobot 버전: ${ver}"
 }
 
@@ -91,10 +96,14 @@ echo "========================================================"
 echo "  LeRobot 0.4.4 Policy Server"
 echo "========================================================"
 
-check_gpu
-check_lerobot
-
 CMD="${1:-policy-server}"
+
+# GPU 가 필요 없는 모드(bash/python/info/prepare-model)는 체크를 건너뜀.
+# prepare-model 은 huggingface-cli download 만 실행하므로 GPU 불필요.
+case "$CMD" in
+  bash|shell|python|info|prepare-model) ;;
+  *) check_gpu; check_lerobot ;;
+esac
 
 case "$CMD" in
 

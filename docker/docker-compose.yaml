@@ -128,13 +128,14 @@ services:
     # command: teleop
 
     # ── 헬스체크 ───────────────────────────────────────────────────────────
-    # teleoperation 자체는 장시간 실행 프로세스이므로 간단한 python import 확인
+    # `import lerobot` 은 torch 포함 전체 임포트라 수 초 소요 → 빌드 시점에 생성한
+    # 버전 파일 존재 여부로 대체 (밀리초, Python 기동 없음).
     healthcheck:
-      test: ["CMD", "python", "-c", "import lerobot; print('ok')"]
+      test: ["CMD-SHELL", "test -f /opt/lerobot_version.txt"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 10s
     ipc: host
     stdin_open: true
     tty: true
@@ -219,13 +220,15 @@ services:
     command: ["policy-server"]
 
     # ── 헬스체크 ─────────────────────────────────────────────────────────
-    # async_inference 모듈 import 만 확인 (gRPC 포트는 모델 로드 후 LISTEN)
+    # `import lerobot.async_inference.policy_server` 은 transformers 포함 전체 임포트라
+    # 10-30초 소요 → 버전 파일 존재 여부로 대체 (밀리초, Python 기동 없음).
+    # gRPC 서버 LISTEN 여부는 모델 로드 후에야 확인 가능하므로 start_period 로 대기.
     healthcheck:
-      test: ["CMD", "python", "-c", "import lerobot.async_inference.policy_server"]
+      test: ["CMD-SHELL", "test -f /opt/lerobot_version.txt"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 15s
     ipc: host
     stdin_open: true
     tty: true
