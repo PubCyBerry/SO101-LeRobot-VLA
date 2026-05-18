@@ -48,6 +48,20 @@ INFERENCE_LATENCY="${INFERENCE_LATENCY:-0.033}"
 OBS_QUEUE_TIMEOUT="${OBS_QUEUE_TIMEOUT:-2}"
 POLICY_SERVER_EXTRA_ARGS="${POLICY_SERVER_EXTRA_ARGS:-}"
 
+# ── train 환경 변수 ──────────────────────────────────────────────────────────
+HF_DATASET_REPO_ID="${HF_DATASET_REPO_ID:-}"
+DATASET_ROOT="${DATASET_ROOT:-}"
+POLICY_TYPE="${POLICY_TYPE:-}"
+POLICY_PATH="${POLICY_PATH:-}"
+POLICY_REPO_ID="${POLICY_REPO_ID:-}"
+OUTPUT_DIR="${OUTPUT_DIR:-}"
+TRAIN_STEPS="${TRAIN_STEPS:-100000}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+JOB_NAME="${JOB_NAME:-}"
+DEVICE="${DEVICE:-cuda}"
+WANDB_ENABLE="${WANDB_ENABLE:-false}"
+TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
+
 # ── 색상 출력 유틸 ────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
@@ -226,7 +240,25 @@ case "$CMD" in
   train)
     info "── Train 시작 ────────────────────────────────────"
     shift
-    exec lerobot-train "$@"
+    TRAIN_ARGS=()
+    [[ -n "${HF_DATASET_REPO_ID}" ]] && TRAIN_ARGS+=("--dataset.repo_id=${HF_DATASET_REPO_ID}")
+    [[ -n "${DATASET_ROOT}" ]]       && TRAIN_ARGS+=("--dataset.root=${DATASET_ROOT}")
+    [[ -n "${POLICY_TYPE}" ]]        && TRAIN_ARGS+=("--policy.type=${POLICY_TYPE}")
+    [[ -n "${POLICY_PATH}" ]]        && TRAIN_ARGS+=("--policy.path=${POLICY_PATH}")
+    [[ -n "${POLICY_REPO_ID}" ]]     && TRAIN_ARGS+=("--policy.repo_id=${POLICY_REPO_ID}")
+    [[ -n "${OUTPUT_DIR}" ]]         && TRAIN_ARGS+=("--output_dir=${OUTPUT_DIR}")
+    [[ -n "${TRAIN_STEPS}" ]]        && TRAIN_ARGS+=("--steps=${TRAIN_STEPS}")
+    [[ -n "${BATCH_SIZE}" ]]         && TRAIN_ARGS+=("--batch_size=${BATCH_SIZE}")
+    [[ -n "${JOB_NAME}" ]]           && TRAIN_ARGS+=("--job_name=${JOB_NAME}")
+    [[ -n "${WANDB_ENABLE}" ]]       && TRAIN_ARGS+=("--wandb.enable=${WANDB_ENABLE}")
+    [[ -n "${DEVICE}" ]]             && TRAIN_ARGS+=("--policy.device=${DEVICE}")
+    info "  Dataset  → ${HF_DATASET_REPO_ID:-<미설정>}"
+    info "  Policy   → type=${POLICY_TYPE:-<미설정>}  path=${POLICY_PATH:-none}"
+    info "  Output   → ${OUTPUT_DIR:-<미설정>}"
+    info "  Steps    → ${TRAIN_STEPS}  Batch → ${BATCH_SIZE}  Device → ${DEVICE}"
+    # TRAIN_EXTRA_ARGS: word-split 의도적 (복수 플래그 지원)
+    # "$@": 추가 CLI 인자 (예: --resume=true). env var 빌드 값보다 뒤에 위치해 last-wins 로 덮어씀
+    exec lerobot-train "${TRAIN_ARGS[@]}" ${TRAIN_EXTRA_ARGS} "$@"
     ;;
 
   # ────────────────────────────────────────────────────────────────────────────

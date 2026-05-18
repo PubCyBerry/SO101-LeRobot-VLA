@@ -374,25 +374,33 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot ba
 | HF_DATASET_REPO_ID | 학습 데이터셋 HF Hub ID, 기본값은 `${HF_USER}/${SINGLE_TASK}` |
 | DATASET_ROOT | 데이터셋 로컬 저장 루트 |
 | POLICY_TYPE | Policy 종류(목록은 [여기](https://github.com/huggingface/lerobot/tree/v0.5.1/src/lerobot/policies)에서 확인) |
+| POLICY_PATH | 파인튜닝 시 베이스 체크포인트 경로/Hub ID (예: `lerobot/smolvla_base`) |
+| POLICY_REPO_ID | 결과 체크포인트를 push할 HF Hub ID |
 | JOB_NAME | 실험 이름(WandB에 표시) |
 | BATCH_SIZE | 배치 크기(기본값은 8) |
 | TRAIN_STEPS | 총 학습 스텝 수(기본값은 100,000) |
-| OUTPUT_DIR | 체크포인트, 로그 출력 디렉터리(기본값은 `outputs/train/${JOB_NAME}`) |
-| DEVICE | 가속기 종류(예: `cuda`) |
-| WANDB_ENABLE | wandb 연동 여부 |
+| OUTPUT_DIR | 체크포인트, 로그 출력 디렉터리(기본값은 `/workspace/outputs/train/${JOB_NAME}`) |
+| DEVICE | 가속기 종류(기본값은 `cuda`) |
+| WANDB_ENABLE | wandb 연동 여부(기본값은 `false`) |
+| TRAIN_EXTRA_ARGS | 추가 `lerobot-train` 인자 |
 
-`train` 모드는 인자를 그대로 `lerobot-train` 에 위임하므로, `.env` 의 변수를 셸 보간으로 채워 전달한다. **호출 컨테이너는 `lerobot-policy-server`** (Dockerfile.smolvla 에만 transformers / accelerate / num2words 가 설치됨 — lerobot 이미지에서는 SmolVLA 학습 불가).
+**호출 컨테이너는 `lerobot-policy-server`** (Dockerfile.smolvla 에만 transformers / accelerate / num2words 가 설치됨 — lerobot 이미지에서는 SmolVLA 학습 불가). `server-entrypoint.sh` 가 컨테이너 내부 env var에서 CLI 인자를 조립하므로 `.env` 만 채우면 된다.
 
 ```bash
 docker compose --env-file .env -f docker/docker-compose.yaml run \
-    --rm lerobot-policy-server train \
-        --dataset.repo_id=${HF_DATASET_REPO_ID} \
-        --policy.type=${POLICY_TYPE} \
-        --output_dir=${OUTPUT_DIR} \
-        --steps=${TRAIN_STEPS} \
-        --batch_size=${BATCH_SIZE} \
-        --wandb.enable=${WANDB_ENABLE} \
-        ${TRAIN_EXTRA_ARGS}
+    --rm lerobot-policy-server train
+```
+
+추가 인자를 넘기면 env var 빌드 값 뒤에 붙어 last-wins 로 덮어쓴다. `--resume=true` 처럼 env var에 없는 플래그나 특정 값을 일시 재정의할 때 사용:
+
+```bash
+# 학습 재개
+docker compose --env-file .env -f docker/docker-compose.yaml run \
+    --rm lerobot-policy-server train --resume=true
+
+# steps만 재정의
+docker compose --env-file .env -f docker/docker-compose.yaml run \
+    --rm lerobot-policy-server train --steps=5000
 ```
 
 ### Policy 평가 및 추론
